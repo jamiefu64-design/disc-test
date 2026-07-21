@@ -268,7 +268,7 @@
     .result-type .primary { font-size: 1.8em; padding: 8px 20px; }
   }
 </style>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./vendor/supabase.min.js"></script>
 </head>
 <body>
 <div class="container">
@@ -303,17 +303,7 @@
     <div class="submit-status" id="submitStatus"></div>
   </div>
 
-  <!-- 管理员入口 -->
-  <div style="text-align:center;margin:8px 0 30px;padding:12px;border-top:1px solid #eee;">
-    <details style="font-size:0.8em;color:#999;cursor:pointer;">
-      <summary>🔐 管理员入口</summary>
-      <div style="margin-top:8px;">
-        <input type="password" id="adminPwd" placeholder="输入管理员密码" style="padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:0.9em;width:160px;">
-        <button onclick="checkAdmin()" style="padding:6px 14px;background:#667eea;color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:4px;">查看</button>
-        <p style="margin-top:4px;color:#999;font-size:0.85em;">（默认密码: disc2024）</p>
-      </div>
-    </details>
-  </div>
+
 </div>
 
 <div class="result-overlay" id="resultOverlay">
@@ -504,6 +494,24 @@ function closeResult() {
 }
 
 // ===== SUBMIT RESULTS =====
+
+// 带重试的云端插入（默认 3 次，间隔递增；防高并发/弱网静默丢数据）
+async function insertWithRetry(payload, maxRetries = 3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const { error } = await supabaseClient.from('disc_results').insert([payload]);
+      if (error) throw error;
+      return;
+    } catch (e) {
+      lastErr = e;
+      console.warn('Supabase 提交第 ' + attempt + ' 次失败:', e);
+      if (attempt < maxRetries) await new Promise(r => setTimeout(r, 600 * attempt));
+    }
+  }
+  throw lastErr;
+}
+
 async function submitResult(userName, totals, scores, primary, secondary) {
   const statusEl = document.getElementById('submitStatus');
   statusEl.className = 'submit-status';
@@ -531,29 +539,24 @@ async function submitResult(userName, totals, scores, primary, secondary) {
     `━━━━━━━━━━━━━━━━`
   ].join('\n');
 
-  // 提交到 Supabase 云端数据库
+  // 提交到 Supabase 云端数据库（带重试，防弱网/高并发静默丢数据）
   try {
-    const { error } = await supabaseClient
-      .from('disc_results')
-      .insert([{
-        name: userName,
-        primary_type: primary,
-        secondary_type: secondary,
-        score_d: totals.D,
-        score_i: totals.I,
-        score_s: totals.S,
-        score_c: totals.C
-      }]);
-    if (error) throw error;
+    await insertWithRetry({
+      name: userName,
+      primary_type: primary,
+      secondary_type: secondary,
+      score_d: totals.D,
+      score_i: totals.I,
+      score_s: totals.S,
+      score_c: totals.C
+    });
     statusEl.innerHTML += '<br>☁️ 结果已安全存入云端数据库';
   } catch(e) {
     console.error('Supabase 提交失败:', e);
     statusEl.innerHTML += '<br>⚠️ 云端保存失败，但你的结果已生成，可复制发群';
   }
 
-  // 保存到本地存储（用于管理员查看）
-  saveToLocalStorage(userName, totals, scores, primary, secondary);
-  
+
   // 更新状态
   statusEl.innerHTML = '✅ 结果已生成！<br>📋 <strong>请复制下方结果发送给Jamie</strong>';
   statusEl.className = 'submit-status success';
@@ -604,66 +607,13 @@ function openWecom() {
   }, 500);
 }
 
-// ===== LOCAL STORAGE（管理员查看所有结果）=====
-function saveToLocalStorage(userName, totals, scores, primary, secondary) {
-  try {
-    const record = {
-      name: userName,
-      primary: primary,
-      secondary: secondary,
-      scoreD: totals.D,
-      scoreI: totals.I,
-      scoreS: totals.S,
-      scoreC: totals.C,
-      time: new Date().toLocaleString('zh-CN')
-    };
-    
-    let results = [];
-    try {
-      const stored = localStorage.getItem('disc_results');
-      if (!stored) {
-        alert('暂无本地记录');
-        return;
-      }
-      const results = JSON.parse(stored);
-    } catch(e) {}
-    results.push(record);
-    localStorage.setItem('disc_results', JSON.stringify(results));
-  } catch(e) {}
-}
 
-function showAllResults() {
-  try {
-    const stored = localStorage.getItem('disc_results');
-    if (!stored) {
-      alert('暂无本地记录');
-      return;
-    }
-    const results = JSON.parse(stored);
-    let msg = `📊 本地共 ${results.length} 条记录：\n\n`;
-    results.forEach((r, i) => {
-      msg += `${i+1}. ${r.name || '匿名'} → ${r.primary}型 (D${r.scoreD} I${r.scoreI} S${r.scoreS} C${r.scoreC}) ${r.time}\n`;
-    });
-    alert(msg);
-  } catch(e) {
-    alert('读取失败');
-  }
-}
+
 
 // Close overlay on background click
 document.getElementById('resultOverlay').addEventListener('click', function(e) {
   if (e.target === this) closeResult();
 });
-
-// ===== Admin check =====
-function checkAdmin() {
-  const pwd = document.getElementById('adminPwd').value;
-  if (pwd === 'disc2024') {
-    showAllResults();
-  } else {
-    alert('密码错误');
-  }
-}
 
 // Init
 buildQuestionnaire();
